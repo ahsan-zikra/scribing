@@ -35,20 +35,19 @@ RUN apt-get update && apt-get install -y \
 # And set it as the working directory
 WORKDIR /app
 
+COPY . .
 # Copy just the dependency files first, for more efficient layer caching
-COPY pyproject.toml uv.lock ./
-RUN mkdir -p src
+
 
 # Install Python dependencies using UV's lock file
 # --locked ensures we use exact versions from uv.lock for reproducible builds
 # This creates a virtual environment and installs all dependencies
 # Ensure your uv.lock file is checked in for consistency across environments
-RUN uv sync --locked
-
+RUN uv pip install --system -e .
 # Copy all remaining pplication files into the container
 # This includes source code, configuration files, and dependency specifications
 # (Excludes files specified in .dockerignore)
-COPY . .
+
 
 RUN ls /app/src
 
@@ -64,7 +63,7 @@ USER appuser
 # Pre-download any ML models or files the agent needs
 # This ensures the container is ready to run immediately without downloading
 # dependencies at runtime, which improves startup time and reliability
-RUN uv run src/agent.py download-files
+RUN python src/agent.py download-files
 
 # Run the application using UV
 # UV will activate the virtual environment and run the agent.
