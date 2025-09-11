@@ -95,7 +95,7 @@ class ChatNoteOutput(BaseModel):
 """
 
 # API key (replace with your actual key or load from .env)
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyDmI0ZL6BHbC7zXIMDSBEvJ4XqX5quvk0g")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 @dataclass
 class State(TypedDict):
