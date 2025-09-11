@@ -219,7 +219,8 @@ if __name__ == "__main__":
     opts = WorkerOptions(
         entrypoint_fnc=entrypoint,
         worker_type=WorkerType.ROOM,
-        request_fnc=request_fnc,  
+        request_fnc=request_fnc,
+        job_concurrency=10,
         job_memory_warn_mb=1024,  # Warn at 1GB instead of 500MB
         job_memory_limit_mb=4096,  # Set limit at 4GB for safety
         initialize_process_timeout=500,
