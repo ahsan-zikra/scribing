@@ -1,8 +1,10 @@
 import logging
+import os
 
 from dotenv import load_dotenv
 from livekit.agents import (
     NOT_GIVEN,
+JobExecutorType,
     Agent,
     AgentFalseInterruptionEvent,
     AgentSession,
@@ -29,8 +31,16 @@ from livekit.agents.utils.misc import shortuuid
 
 logger = logging.getLogger("agent")
 
-load_dotenv(".env.local")
+load_dotenv('../.env.local')
 
+
+# Check if the LIVEKIT_API_KEY is set
+livekit_api_key = os.getenv("LIVEKIT_API_KEY")
+
+if livekit_api_key:
+    logger.info("LIVEKIT_API_KEY is loaded.")
+else:
+    logger.info("LIVEKIT_API_KEY is not loaded.")
 
 class Assistant(Agent):
     def __init__(self) -> None:
@@ -46,7 +56,7 @@ async def _final_graph(conversation):
             await _invoke_graph(" ".join(conversation))
 
 async def invoke_graph(text):
-    logger.info("Invoking graph with text...")
+    logger.info("\n\n\n\nInvoking graph with text...\n\n\n\n")
     result = await Graph.ainvoke({"raw_scribe": text})
     return result
 
@@ -121,17 +131,68 @@ async def entrypoint(ctx: JobContext):
             async def _send_insights():
                 try:
                     text = " ".join(conversation)
-                    insights = await _gen_insights(text)
-                    logger.info("Interim insights at %s: %s", counter, insights)
-                    if isinstance(insights, list):
-                        payload = "\n".join(insights)
-                    else:
-                        logger.warning("Insights is not a list: %s", type(insights))
-                    await room.local_participant.send_text(
-                        payload,
-                        topic="lk.transcription",
-                        attributes={"lk.transcribed_track_id": shortuuid()}
+                    result = await invoke_graph(text)
+                    logger.info(result)
+
+                    # Extract data from the graph result
+                    insights_list = result.get('insights', [])
+                    probing_questions = result.get('probing_questions', [])
+                    chat_note = result.get('chat_note', '')
+                    red_flags = result.get('red_flags', [])
+                    
+                    logger.info(
+                        "Interim insights at %s: %s", counter, insights_list
                     )
+
+                    # Generate payloads for each topic
+                    payloads = {}
+                    
+                    # Insights topic
+                    if isinstance(insights_list, list) and insights_list:
+                        payloads['insights'] = "\n".join(insights_list)
+                    else:
+                        logger.warning("Insights is not a list: %s", type(insights_list))
+                        payloads['insights'] = "No insights generated"
+
+                    # Notes topic (chat note)
+                    if chat_note and isinstance(chat_note, str):
+                        payloads['notes'] = chat_note
+                    else:
+                        payloads['notes'] = "No chat note generated"
+
+                    # Probing questions topic
+                    if isinstance(probing_questions, list) and probing_questions:
+                        payloads['probing'] = "\n".join(probing_questions)
+                    else:
+                        payloads['probing'] = "No probing questions generated"
+
+                    # Red flags topic
+                    if isinstance(red_flags, list) and red_flags:
+                        payloads['redflags'] = "\n".join(red_flags)
+                    else:
+                        payloads['redflags'] = "No red flags identified"
+
+                    # Send to all topics
+                    topics = {
+                        'insights': 'lk.insights',
+                        'notes': 'lk.notes', 
+                        'probing': 'lk.probing',
+                        'redflags': 'lk.redflags'
+                    }
+
+                    for content_type, topic in topics.items():
+                        payload = payloads[content_type]
+                        track_id = shortuuid()
+                        await room.local_participant.send_text(
+                            payload,
+                            topic=topic,
+                            attributes={
+                                "lk.transcribed_track_id": track_id,
+                                "lk.content_type": content_type  # Additional attribute to identify content type
+                            }
+                        )
+                        logger.info(f"Sent {content_type} to topic {topic} with payload length: {len(payload)}")
+
                 except Exception as e:
                     logger.error("Failed to send interim insights: %s", e)
             loop.create_task(_send_insights())    # For more information, see https://docs.livekit.io/agents/build/metrics/
@@ -158,12 +219,15 @@ async def entrypoint(ctx: JobContext):
             payload = (
                 f"Graph Insights: {', '.join(result.get('insights', []))}\n"
                 f"Probing Questions: {'; '.join(result.get('probing_questions', []))}\n"
-                f"Notes: {result.get('chart_note', 'N/A')}"
+                f"Notes: {result.get('chat_note', ' ')}\n"
+                f"Red Flags: {', '.join(result.get('red_flags', []))}"
+                
             )
+            
 
             await room.local_participant.send_text(
                 payload,
-                topic="lk.transcription",
+                topic="lk.notes",
                 attributes={"lk.transcribed_track_id": shortuuid()}
             )
             logger.info("Graph result sent to room successfully.")
@@ -179,6 +243,8 @@ async def entrypoint(ctx: JobContext):
         #we can send all the data back to 
         logger.info("Session closed")
         logger.info(f"Conversation: {' '.join(conversation)}")
+        result = asyncio.run(invoke_graph(" ".join(conversation)))
+        logger.info(f"Final Graph Result: {result}")
         
     async def log_usage():
         summary = usage_collector.get_summary()
@@ -220,7 +286,7 @@ if __name__ == "__main__":
         entrypoint_fnc=entrypoint,
         worker_type=WorkerType.ROOM,
         request_fnc=request_fnc,
-        job_concurrency=10,
+        job_executor_type=JobExecutorType.THREAD,  # ← many rooms per process
         job_memory_warn_mb=1024,  # Warn at 1GB instead of 500MB
         job_memory_limit_mb=4096,  # Set limit at 4GB for safety
         initialize_process_timeout=500,
