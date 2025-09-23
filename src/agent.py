@@ -243,7 +243,7 @@ async def entrypoint(ctx: JobContext):
         #we can send all the data back to 
         logger.info("Session closed")
         logger.info(f"Conversation: {' '.join(conversation)}")
-        result = asyncio.run(invoke_graph(" ".join(conversation)))
+        result = asyncio.create_task(invoke_graph(" ".join(conversation)))
         logger.info(f"Final Graph Result: {result}")
         
     async def log_usage():
