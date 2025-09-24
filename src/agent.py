@@ -36,12 +36,7 @@ load_dotenv('../.env.local')
 
 # Check if the LIVEKIT_API_KEY is set
 livekit_api_key = os.getenv("LIVEKIT_API_KEY")
-deepgram_api_key = os.getenv("DEEPGRAM_API_KEY")
-if deepgram_api_key:
-    logger.info("DEEPGRAM_API_KEY is loaded.")
-else:
-    logger.info("DEEPGRAM_API_KEY is not loaded.")  
-    
+
 if livekit_api_key:
     logger.info("LIVEKIT_API_KEY is loaded.")
 else:
@@ -183,28 +178,7 @@ async def entrypoint(ctx: JobContext):
                         'notes': 'lk.notes', 
                         'probing': 'lk.probing',
                         'redflags': 'lk.redflags'
-                    }                    
-
-                    await room.local_participant.send_text(
-                        payloads="hello from notes",
-                        topic="lk.notes",
-                        attributes={"lk.transcribed_track_id": shortuuid()}
-                    )
-                    await room.local_participant.send_text(
-                        payloads="hello from probing",
-                        topic="lk.probing",
-                        attributes={"lk.transcribed_track_id": shortuuid()}
-                    )
-                    await room.local_participant.send_text(
-                        payloads="hello from redflags",
-                        topic="lk.redflags",
-                        attributes={"lk.transcribed_track_id": shortuuid()}
-                    )
-                    await room.local_participant.send_text(
-                        payloads="hello from transcription",
-                        topic="lk.transcription",
-                        attributes={"lk.transcribed_track_id": shortuuid()}
-                    )
+                    }
 
                     for content_type, topic in topics.items():
                         payload = payloads[content_type]
@@ -269,8 +243,7 @@ async def entrypoint(ctx: JobContext):
         #we can send all the data back to 
         logger.info("Session closed")
         logger.info(f"Conversation: {' '.join(conversation)}")
-        result = asyncio.create_task(invoke_graph(" ".join(conversation)))
-        
+        result = asyncio.run(invoke_graph(" ".join(conversation)))
         logger.info(f"Final Graph Result: {result}")
         
     async def log_usage():
