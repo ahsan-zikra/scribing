@@ -1,51 +1,60 @@
+# graph.py  (single file, summary included)
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TypedDict, List
-from langgraph.graph import StateGraph, START
-from langgraph.runtime import Runtime
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.prompts import PromptTemplate
-from dotenv import load_dotenv
-from pydantic import BaseModel
-import sys
 import os
+import sys
+import time
+import asyncio
+from dataclasses import dataclass
+from typing import List, TypedDict
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from dotenv import load_dotenv
+from langchain_core.prompts import PromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langgraph.graph import StateGraph, START
+from pydantic import BaseModel
 
-# Load environment variables
-load_dotenv('../.env.local')
+# --------------------------------------------------
+# 1.  Env loading
+# --------------------------------------------------
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+for env in ("../.env.local", "./.env.local", "./.env"):
+    load_dotenv(env)
 
+# --------------------------------------------------
+# 2.  Pydantic I/O schemas
+# --------------------------------------------------
 class Input(BaseModel):
-    """Input schema for the agent."""
     raw_scribe: str
 
 class Output(BaseModel):
-    """Output schema for the agent."""
     insights: List[str]
     probing_questions: List[str]
     chat_note: str
     red_flags: List[str]
+    summary: str
 
 class InsightsOutput(BaseModel):
-    """Output schema for the insights node."""
     insights: List[str]
     red_flags: List[str]
 
 class ProbingQuestionsOutput(BaseModel):
-    """Output schema for the probing questions node."""
     probing_questions: List[str]
 
 class ChatNoteOutput(BaseModel):
-    """Output schema for the chat note node."""
     chat_note: str
 
-# Define separate prompts for each node
+class SummaryOutput(BaseModel):
+    summary: str
+
+# --------------------------------------------------
+# 3.  Prompts
+# --------------------------------------------------
 INSIGHTS_PROMPT = """
 You are a medical assistant tasked with extracting key insights and identifying red flags from a doctor-patient conversation transcript. 
 
 **Task:**
-- Analyze the conversation to identify key medical facts, symptoms, conditions, or concerns mentioned by the patient.
+- Analyse the conversation to identify key medical facts, symptoms, conditions, or concerns mentioned by the patient.
 - Consider emotional, psychological, or social factors that might be relevant.
 - Return a list of concise insights.
 - **Identify RED FLAGS**: Look for urgent medical concerns that require immediate attention, such as:
@@ -64,11 +73,6 @@ class InsightsOutput(BaseModel):
 
 **Conversation:**
 {conversation}
-
-**Instructions:**
-- Insights should be factual observations from the conversation
-- Red flags should only include truly urgent, potentially life-threatening issues
-- If no red flags are present, return an empty list for red_flags
 """
 
 PROBING_QUESTIONS_PROMPT = """
@@ -79,7 +83,7 @@ You are a medical assistant tasked with generating probing questions based on a 
 - Ensure questions are specific, clarify ambiguous points, and are appropriate for a clinical context.
 - Do not repeat questions already asked by the doctor in the conversation.
 - Use the insights to guide question generation.
-- **PRIORITIZE RED FLAGS**: If red flags are present, generate questions that help assess the urgency and severity of those concerns.
+- **PRIORITISE RED FLAGS**: If red flags are present, generate questions that help assess the urgency and severity of those concerns.
 
 **Output structure:**
 class ProbingQuestionsOutput(BaseModel):
@@ -99,7 +103,7 @@ CHAT_NOTE_PROMPT = """
 You are a medical assistant tasked with generating a concise chat note (clinical summary) based on a doctor-patient conversation transcript and extracted insights.
 
 **Task:**
-- Summarize the key medical information, symptoms, and concerns discussed in the conversation.
+- Summarise the key medical information, symptoms, and concerns discussed in the conversation.
 - Incorporate the provided insights to ensure accuracy.
 - **HIGHLIGHT RED FLAGS**: Clearly mark any red flags identified, as these require immediate attention.
 - Write a concise chat note suitable for a medical record, focusing on clinical relevance.
@@ -120,87 +124,133 @@ class ChatNoteOutput(BaseModel):
 **Note:** Structure the chat note to clearly separate routine findings from any urgent red flags.
 """
 
-# API key (replace with your actual key or load from .env)
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+SUMMARY_PROMPT = """
+You are a medical assistant.  
+Write a **single-paragraph plain-language summary** (2-3 sentences) of the doctor-patient conversation below.  
+The summary must be suitable for the patient to read and should **highlight any red-flagged urgent issues** first.
 
+Conversation:
+{conversation}
+
+Insights:
+{insights}
+
+Red flags (if any):
+{red_flags}
+
+Chat note:
+{chat_note}
+"""
+
+# --------------------------------------------------
+# 4.  LangGraph state
+# --------------------------------------------------
 @dataclass
 class State(TypedDict):
-    """State for the agent."""
     raw_scribe: str
     insights: List[str]
     probing_questions: List[str]
     chat_note: str
     red_flags: List[str]
+    summary: str
 
-async def insights_node(state: State) -> State:
-    """Generates insights and red flags from the conversation."""
+# --------------------------------------------------
+# 5.  Node functions
+# --------------------------------------------------
+def insights_node(state: State) -> State:
     try:
-        print("Invoking Insights LLM")
         llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
         structured_llm = llm.with_structured_output(InsightsOutput)
         prompt = PromptTemplate.from_template(INSIGHTS_PROMPT)
         prompt_value = prompt.invoke({"conversation": state["raw_scribe"]})
         llm_response = structured_llm.invoke(prompt_value)
-        state['insights'] = llm_response.insights
-        state['red_flags'] = llm_response.red_flags
-        print(f"Insights: {state['insights']}")
-        print(f"Red Flags: {state['red_flags']}")
-    except Exception as e:
-        print(f"Error in insights node: {e}")
-        state['insights'] = []
-        state['red_flags'] = []
+        state["insights"] = llm_response.insights
+        state["red_flags"] = llm_response.red_flags
+    except Exception:
+        state["insights"] = []
+        state["red_flags"] = []
     return state
 
-async def probing_questions_node(state: State) -> State:
-    """Generates probing questions based on conversation, insights, and red flags."""
+def probing_questions_node(state: State) -> State:
     try:
-        print("Invoking Probing Questions LLM")
         llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
         structured_llm = llm.with_structured_output(ProbingQuestionsOutput)
         prompt = PromptTemplate.from_template(PROBING_QUESTIONS_PROMPT)
         prompt_value = prompt.invoke({
             "conversation": state["raw_scribe"],
             "insights": state["insights"],
-            "red_flags": state["red_flags"]
+            "red_flags": state["red_flags"],
         })
         llm_response = structured_llm.invoke(prompt_value)
-        state['probing_questions'] = llm_response.probing_questions
-        print(f"Probing Questions: {state['probing_questions']}")
-    except Exception as e:
-        print(f"Error in probing questions node: {e}")
-        state['probing_questions'] = []
+        state["probing_questions"] = llm_response.probing_questions
+    except Exception:
+        state["probing_questions"] = []
     return state
 
-async def chat_note_node(state: State) -> State:
-    """Generates a chat note based on conversation, insights, and red flags."""
+def chat_note_node(state: State) -> State:
     try:
-        print("Invoking Chat Note LLM")
         llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
         structured_llm = llm.with_structured_output(ChatNoteOutput)
         prompt = PromptTemplate.from_template(CHAT_NOTE_PROMPT)
         prompt_value = prompt.invoke({
             "conversation": state["raw_scribe"],
             "insights": state["insights"],
-            "red_flags": state["red_flags"]
+            "red_flags": state["red_flags"],
         })
         llm_response = structured_llm.invoke(prompt_value)
-        state['chat_note'] = llm_response.chat_note
-        print(f"Chat Note: {state['chat_note']}")
-    except Exception as e:
-        print(f"Error in chat note node: {e}")
-        state['chat_note'] = ""
+        state["chat_note"] = llm_response.chat_note
+    except Exception:
+        state["chat_note"] = ""
     return state
 
-# Build the graph
+def summary_node(state: State) -> State:
+    try:
+        llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0)
+        structured_llm = llm.with_structured_output(SummaryOutput)
+        prompt = PromptTemplate.from_template(SUMMARY_PROMPT)
+        prompt_value = prompt.invoke({
+            "conversation": state["raw_scribe"],
+            "insights": state["insights"],
+            "red_flags": state["red_flags"],
+            "chat_note": state["chat_note"],
+        })
+        state["summary"] = structured_llm.invoke(prompt_value).summary
+    except Exception:
+        state["summary"] = "Summary could not be generated."
+    return state
+
+# --------------------------------------------------
+# 6.  Build and compile graph
+# --------------------------------------------------
 builder = StateGraph(State, input_schema=Input, output_schema=Output)
 builder.add_node("insights", insights_node)
 builder.add_node("probing_questions", probing_questions_node)
 builder.add_node("chat_note", chat_note_node)
+builder.add_node("summary", summary_node)
 
-# Define edges
 builder.add_edge(START, "insights")
 builder.add_edge("insights", "probing_questions")
 builder.add_edge("probing_questions", "chat_note")
-builder.set_finish_point("chat_note")
+builder.add_edge("chat_note", "summary")
+builder.set_finish_point("summary")
 
 Graph = builder.compile()
+
+# --------------------------------------------------
+# 7.  Async wrapper (keeps old interface)
+# --------------------------------------------------
+async def ainvoke(input_dict: dict) -> dict:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, Graph.invoke, input_dict)
+
+Graph.ainvoke = ainvoke
+
+# --------------------------------------------------
+# 8.  Quick sanity test
+# --------------------------------------------------
+if __name__ == "__main__":
+    t0 = time.process_time()
+    result = Graph.invoke({"raw_scribe": "Patient reports chest pain and shortness of breath."})
+    print(result)
+    t1 = time.process_time()
+    print("Time taken:", t1 - t0, "seconds")
