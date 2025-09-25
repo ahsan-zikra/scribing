@@ -83,7 +83,6 @@ async def _send_insights(conversation, room):
         asyncio.create_task(room.local_participant.send_text(payloads['probing'],  topic="lk.probingQuestions", attributes={"lk.transcribed_track_id": shortuuid()}))
         asyncio.create_task(room.local_participant.send_text(payloads['redflags'], topic="lk.redflags", attributes={"lk.transcribed_track_id": shortuuid()}))
         asyncio.create_task(room.local_participant.send_text(payloads['insights'], topic="lk.insights", attributes={"lk.transcribed_track_id": shortuuid()}))
-        asyncio.create_task(room.local_participant.send_text("hello from summary", topic="lk.summary", attributes={"lk.transcribed_track_id": shortuuid()}))
         asyncio.create_task(room.local_participant.send_text(payloads['summary'], topic="lk.summary", attributes={"lk.transcribed_track_id": shortuuid()}))
         
 
