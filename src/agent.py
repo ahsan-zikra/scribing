@@ -32,6 +32,8 @@ from livekit.agents.utils.misc import shortuuid
 logger = logging.getLogger("agent")
 
 load_dotenv('../.env.local')
+load_dotenv('../.env')
+load_dotenv('./.env.local')
 
 
 # Check if the LIVEKIT_API_KEY is set
@@ -56,6 +58,39 @@ class Assistant(Agent):
             You are curious, friendly, and have a sense of humor.""",
         )
 
+
+async def _send_insights(conversation, room):
+    try:
+        text = " ".join(conversation)
+        result = await invoke_graph(text)
+        logger.info(result)
+
+        insights_list = result.get('insights', [])
+        probing_questions = result.get('probing_questions', [])
+        chat_note = result.get('chat_note', '')
+        red_flags = result.get('red_flags', [])
+
+        payloads = {
+            'insights':  "\n".join(insights_list)  if isinstance(insights_list, list)  and insights_list  else "No insights generated",
+            'notes':     chat_note                  if isinstance(chat_note, str)       and chat_note     else "No chat note generated",
+            'probing':   "\n".join(probing_questions) if isinstance(probing_questions, list) and probing_questions else "No probing questions generated",
+            'redflags':  "\n".join(red_flags)      if isinstance(red_flags, list)      and red_flags     else "No red flags identified",
+            'summary':   result.get('summary', '')  if isinstance(result.get('summary'), str) and result.get('summary') else "No summary generated",
+        }
+
+        # fire-and-forget tasks
+        asyncio.create_task(room.local_participant.send_text(payloads['notes'],    topic="lk.notes", attributes={"lk.transcribed_track_id": shortuuid()}))
+        asyncio.create_task(room.local_participant.send_text(payloads['probing'],  topic="lk.probingQuestions", attributes={"lk.transcribed_track_id": shortuuid()}))
+        asyncio.create_task(room.local_participant.send_text(payloads['redflags'], topic="lk.redflags", attributes={"lk.transcribed_track_id": shortuuid()}))
+        asyncio.create_task(room.local_participant.send_text(payloads['insights'], topic="lk.insights", attributes={"lk.transcribed_track_id": shortuuid()}))
+        asyncio.create_task(room.local_participant.send_text("hello from summary", topic="lk.summary", attributes={"lk.transcribed_track_id": shortuuid()}))
+        asyncio.create_task(room.local_participant.send_text(payloads['summary'], topic="lk.summary", attributes={"lk.transcribed_track_id": shortuuid()}))
+        
+
+    except Exception as e:
+        logger.error("Failed to send interim insights: %s", e)
+    finally:
+        logger.info("Send Insights function completed successfully")
 async def _final_graph(conversation):
         if conversation:
             await _invoke_graph(" ".join(conversation))
@@ -79,10 +114,10 @@ async def request_fnc(req: JobRequest):
     )
     logger.info("Job request accepted")
 
-async def _invoke_graph(text: str) -> None:
+def _invoke_graph(text: str) -> None:
     logger.info("Invoking graph with %d chars", len(text))
     try:
-        result = await Graph.ainvoke({"raw_scribe": text})
+        result =  Graph.ainvoke({"raw_scribe": text})
         logger.info("Graph insights: %s", result.get("insights"))
     except Exception as e:
         logger.exception("Graph failed: %s", e)
@@ -123,105 +158,19 @@ async def entrypoint(ctx: JobContext):
         loop = asyncio.get_running_loop()
 
         # 1. Forward the user transcript
-        # loop.create_task(
-        #     room.local_participant.send_text(
-        #         ev.transcript,
-        #         topic="lk.transcription",
-        #         attributes={"lk.transcribed_track_id": shortuuid()}
-        #     )
-        # )
+        loop.create_task(
+             room.local_participant.send_text(
+                 ev.transcript,
+                 topic="lk.transcription",
+                 attributes={"lk.transcribed_track_id": shortuuid()}
+             )
+         )
 
         # 2. Every 10th sentence send interim insights
         if counter % 10 == 0:
-            async def _send_insights():
-                try:
-                    text = " ".join(conversation)
-                    result = await invoke_graph(text)
-                    logger.info(result)
-
-                    # Extract data from the graph result
-                    insights_list = result.get('insights', [])
-                    probing_questions = result.get('probing_questions', [])
-                    chat_note = result.get('chat_note', '')
-                    red_flags = result.get('red_flags', [])
-                    
-                    logger.info(
-                        "Interim insights at %s: %s", counter, insights_list
-                    )
-
-                    # Generate payloads for each topic
-                    payloads = {}
-                    
-                    # Insights topic
-                    if isinstance(insights_list, list) and insights_list:
-                        payloads['insights'] = "\n".join(insights_list)
-                    else:
-                        logger.warning("Insights is not a list: %s", type(insights_list))
-                        payloads['insights'] = "No insights generated"
-
-                    # Notes topic (chat note)
-                    if chat_note and isinstance(chat_note, str):
-                        payloads['notes'] = chat_note
-                    else:
-                        payloads['notes'] = "No chat note generated"
-
-                    # Probing questions topic
-                    if isinstance(probing_questions, list) and probing_questions:
-                        payloads['probing'] = "\n".join(probing_questions)
-                    else:
-                        payloads['probing'] = "No probing questions generated"
-
-                    # Red flags topic
-                    if isinstance(red_flags, list) and red_flags:
-                        payloads['redflags'] = "\n".join(red_flags)
-                    else:
-                        payloads['redflags'] = "No red flags identified"
-
-                    # Send to all topics
-                    topics = {
-                        'insights': 'lk.insights',
-                        'notes': 'lk.notes', 
-                        'probing': 'lk.probing',
-                        'redflags': 'lk.redflags'
-                    }                    
-
-                    await room.local_participant.send_text(
-                        payloads="hello from notes",
-                        topic="lk.notes",
-                        attributes={"lk.transcribed_track_id": shortuuid()}
-                    )
-                    await room.local_participant.send_text(
-                        payloads="hello from probing",
-                        topic="lk.probing",
-                        attributes={"lk.transcribed_track_id": shortuuid()}
-                    )
-                    await room.local_participant.send_text(
-                        payloads="hello from redflags",
-                        topic="lk.redflags",
-                        attributes={"lk.transcribed_track_id": shortuuid()}
-                    )
-                    await room.local_participant.send_text(
-                        payloads="hello from transcription",
-                        topic="lk.transcription",
-                        attributes={"lk.transcribed_track_id": shortuuid()}
-                    )
-
-                    for content_type, topic in topics.items():
-                        payload = payloads[content_type]
-                        track_id = shortuuid()
-                        await room.local_participant.send_text(
-                            payload,
-                            topic=topic,
-                            attributes={
-                                "lk.transcribed_track_id": track_id,
-                                "lk.content_type": content_type  # Additional attribute to identify content type
-                            }
-                        )
-                        logger.info(f"Sent {content_type} to topic {topic} with payload length: {len(payload)}")
-
-                except Exception as e:
-                    logger.error("Failed to send interim insights: %s", e)
-            loop.create_task(_send_insights())    # For more information, see https://docs.livekit.io/agents/build/metrics/
+            loop = asyncio.get_running_loop()
+            logger.info("calling _send_insights function")
+            loop.create_task(_send_insights(conversation, room))    # For more information, see https://docs.livekit.io/agents/build/metrics/
     usage_collector = metrics.UsageCollector()
 
     @session.on("metrics_collected")
